@@ -460,6 +460,10 @@ public class DefaultShutdownStrategy extends ServiceSupport implements ShutdownS
         private final TimeUnit timeUnit;
         private final AtomicBoolean timeoutOccurred;
 
+        private static final int PREPARE_SHUTDOWN_AGAIN = 0;
+        private static final int PREPARE_SHUTDOWN_COMPLETE = 1;
+        private static final int PREPARE_SHUTDOWN_INTERRUPTED = -1;
+
         public ShutdownTask(CamelContext context, List<RouteStartupOrder> routes, long timeout, TimeUnit timeUnit,
                             boolean suspendOnly, boolean abortAfterTimeout, AtomicBoolean timeoutOccurred) {
             this.context = context;
@@ -542,10 +546,10 @@ public class DefaultShutdownStrategy extends ServiceSupport implements ShutdownS
             do {
                 prepareServicesForShutdown();
                 iterationsTook = waitForInflightMessages();
-                if( iterationsTook == -1 ) {
+                if( iterationsTook == PREPARE_SHUTDOWN_INTERRUPTED ) {
                     return;
                 }
-            } while( iterationsTook != 0 );
+            } while( iterationsTook != PREPARE_SHUTDOWN_COMPLETE );
 
             // prepare for shutdown
             for (ShutdownDeferredConsumer deferred : deferredConsumers) {
@@ -594,7 +598,7 @@ public class DefaultShutdownStrategy extends ServiceSupport implements ShutdownS
             }
         }
 
-        private long waitForInflightMessages() {
+        private int waitForInflightMessages() {
             boolean done = false;
             long loopDelaySeconds = 1;
             long loopCount = 0;
@@ -622,17 +626,17 @@ public class DefaultShutdownStrategy extends ServiceSupport implements ShutdownS
                     } catch (InterruptedException e) {
                         if (abortAfterTimeout) {
                             LOG.warn("Interrupted while waiting during graceful shutdown, will abort.");
-                            return -1L;
+                            return PREPARE_SHUTDOWN_INTERRUPTED;
                         } else {
                             LOG.warn("Interrupted while waiting during graceful shutdown, will force shutdown now.");
-                            return 0L;
+                            return PREPARE_SHUTDOWN_COMPLETE;
                         }
                     }
                 } else {
                     done = true;
                 }
             }
-            return loopCount;
+            return (loopCount == 0) ? PREPARE_SHUTDOWN_COMPLETE : PREPARE_SHUTDOWN_AGAIN;
         }
     }
 }
