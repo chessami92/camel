@@ -27,7 +27,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.camel.CamelContext;
@@ -537,55 +536,16 @@ public class DefaultShutdownStrategy extends ServiceSupport implements ShutdownS
                 }
             }
 
-            // notify the services we intend to shutdown
-            for (RouteStartupOrder order : routes) {
-                for (Service service : order.getServices()) {
-                    // skip the consumer as we handle that specially
-                    if (service instanceof Consumer) {
-                        continue;
-                    }
-                    prepareShutdown(service, false, true, false);
+            // preparing for shutdown may release more messages (as with AggregateProcessors)
+            // continue preparing for shutdown until there are zero inflight messages on the first check
+            long iterationsTook;
+            do {
+                prepareServicesForShutdown();
+                iterationsTook = waitForInflightMessages();
+                if( iterationsTook == -1 ) {
+                    return;
                 }
-            }
-
-            // wait till there are no more pending and inflight messages
-            boolean done = false;
-            long loopDelaySeconds = 1;
-            long loopCount = 0;
-            while (!done && !timeoutOccurred.get()) {
-                int size = 0;
-                for (RouteStartupOrder order : routes) {
-                    int inflight = context.getInflightRepository().size(order.getRoute().getId());
-                    for (Consumer consumer : order.getInputs()) {
-                        // include any additional pending exchanges on some consumers which may have internal
-                        // memory queues such as seda
-                        if (consumer instanceof ShutdownAware) {
-                            inflight += ((ShutdownAware) consumer).getPendingExchangesSize();
-                        }
-                    }
-                    if (inflight > 0) {
-                        size += inflight;
-                        LOG.trace("{} inflight and pending exchanges for route: {}", inflight, order.getRoute().getId());
-                    }
-                }
-                if (size > 0) {
-                    try {
-                        LOG.info("Waiting as there are still " + size + " inflight and pending exchanges to complete, timeout in "
-                             + (TimeUnit.SECONDS.convert(timeout, timeUnit) - (loopCount++ * loopDelaySeconds)) + " seconds.");
-                        Thread.sleep(loopDelaySeconds * 1000);
-                    } catch (InterruptedException e) {
-                        if (abortAfterTimeout) {
-                            LOG.warn("Interrupted while waiting during graceful shutdown, will abort.");
-                            return;
-                        } else {
-                            LOG.warn("Interrupted while waiting during graceful shutdown, will force shutdown now.");
-                            break;
-                        }
-                    }
-                } else {
-                    done = true;
-                }
-            }
+            } while( iterationsTook != 0 );
 
             // prepare for shutdown
             for (ShutdownDeferredConsumer deferred : deferredConsumers) {
@@ -621,6 +581,58 @@ public class DefaultShutdownStrategy extends ServiceSupport implements ShutdownS
             }
         }
 
-    }
+        private void prepareServicesForShutdown() {
+            // notify the services we intend to shutdown
+            for (RouteStartupOrder order : routes) {
+                for (Service service : order.getServices()) {
+                    // skip the consumer as we handle that specially
+                    if (service instanceof Consumer) {
+                        continue;
+                    }
+                    prepareShutdown(service, false, true, false);
+                }
+            }
+        }
 
+        private long waitForInflightMessages() {
+            boolean done = false;
+            long loopDelaySeconds = 1;
+            long loopCount = 0;
+            while (!done && !timeoutOccurred.get()) {
+                int size = 0;
+                for (RouteStartupOrder order : routes) {
+                    int inflight = context.getInflightRepository().size(order.getRoute().getId());
+                    for (Consumer consumer : order.getInputs()) {
+                        // include any additional pending exchanges on some consumers which may have internal
+                        // memory queues such as seda
+                        if (consumer instanceof ShutdownAware) {
+                            inflight += ((ShutdownAware) consumer).getPendingExchangesSize();
+                        }
+                    }
+                    if (inflight > 0) {
+                        size += inflight;
+                        LOG.trace("{} inflight and pending exchanges for route: {}", inflight, order.getRoute().getId());
+                    }
+                }
+                if (size > 0) {
+                    try {
+                        LOG.info("Waiting as there are still " + size + " inflight and pending exchanges to complete, timeout in "
+                             + (TimeUnit.SECONDS.convert(timeout, timeUnit) - (loopCount++ * loopDelaySeconds)) + " seconds.");
+                        Thread.sleep(loopDelaySeconds * 1000);
+                    } catch (InterruptedException e) {
+                        if (abortAfterTimeout) {
+                            LOG.warn("Interrupted while waiting during graceful shutdown, will abort.");
+                            return -1L;
+                        } else {
+                            LOG.warn("Interrupted while waiting during graceful shutdown, will force shutdown now.");
+                            return 0L;
+                        }
+                    }
+                } else {
+                    done = true;
+                }
+            }
+            return loopCount;
+        }
+    }
 }

@@ -95,6 +95,20 @@ public class AggregateForceCompletionOnStopTest extends ContextTestSupport {
         assertEquals("aggregation should not have completed yet", 0, myCompletionProcessor.getAggregationCount());
     }
 
+    public void testMultiThreadedForceCompletionTrue() throws Exception {
+        MyCompletionProcessor myCompletionProcessor = context.getRegistry().lookupByNameAndType("myCompletionProcessor", MyCompletionProcessor.class);
+        myCompletionProcessor.reset();
+
+        context.getShutdownStrategy().setShutdownNowOnTimeout(true);
+        context.getShutdownStrategy().setTimeout(5);
+
+        new Sender().start();
+
+        assertEquals("aggregation should not have completed yet", 0, myCompletionProcessor.getAggregationCount());
+        context.stop();
+        assertEquals("aggregation should have completed", 1, myCompletionProcessor.getAggregationCount());
+    }
+
     @Override
     protected JndiRegistry createRegistry() throws Exception {
         JndiRegistry jndi = super.createRegistry();
@@ -116,7 +130,21 @@ public class AggregateForceCompletionOnStopTest extends ContextTestSupport {
                     .aggregate(header("id"), new BodyInAggregatingStrategy()).completionSize(10)
                     .delay(100)
                     .processRef("myCompletionProcessor");
+
+                from("direct:multiRouteAggregator")
+                        .delay(100)
+                        .aggregate(header("id"), new BodyInAggregatingStrategy()).forceCompletionOnStop().completionSize(10)
+                        .to("direct:multiRouteAggregatorResult");
+
+                from("direct:multiRouteAggregatorResult")
+                        .processRef("myCompletionProcessor");
             }
         };
+    }
+
+    private class Sender extends Thread {
+        public void run() {
+            template.sendBodyAndHeader("direct:multiRouteAggregator", "test", "id", 1);
+        }
     }
 }

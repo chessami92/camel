@@ -38,6 +38,14 @@ public class AggregateForceCompletionOnStopParallelTest extends AggregateForceCo
                     .aggregate(header("id"), new BodyInAggregatingStrategy()).completionSize(10).parallelProcessing()
                     .delay(100)
                     .processRef("myCompletionProcessor");
+
+                from("direct:multiRouteAggregator")
+                        .delay(100)
+                        .aggregate(header("id"), new BodyInAggregatingStrategy()).forceCompletionOnStop().completionSize(10).parallelProcessing()
+                        .to("direct:multiRouteAggregatorResult");
+
+                from("direct:multiRouteAggregatorResult")
+                        .processRef("myCompletionProcessor");
             }
         };
     }
